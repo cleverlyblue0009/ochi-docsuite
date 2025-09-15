@@ -15,11 +15,20 @@ const config: Config = {
     elasticsearch: process.env.ELASTICSEARCH_URL || 'http://localhost:9200',
   },
   
-  jwt: {
-    secret: process.env.JWT_SECRET || 'your-super-secret-jwt-key',
-    refreshSecret: process.env.JWT_REFRESH_SECRET || 'your-super-secret-refresh-key',
-    expiresIn: process.env.JWT_EXPIRES_IN || '15m',
-    refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
+  firebase: {
+    projectId: process.env.FIREBASE_PROJECT_ID || '',
+    privateKeyId: process.env.FIREBASE_PRIVATE_KEY_ID || '',
+    privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n') || '',
+    clientEmail: process.env.FIREBASE_CLIENT_EMAIL || '',
+    clientId: process.env.FIREBASE_CLIENT_ID || '',
+    authUri: process.env.FIREBASE_AUTH_URI || 'https://accounts.google.com/o/oauth2/auth',
+    tokenUri: process.env.FIREBASE_TOKEN_URI || 'https://oauth2.googleapis.com/token',
+    clientCertUrl: process.env.FIREBASE_CLIENT_X509_CERT_URL || '',
+  },
+  
+  google: {
+    clientId: process.env.GOOGLE_CLIENT_ID || '',
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
   },
   
   aws: {
@@ -56,8 +65,10 @@ const config: Config = {
 if (config.nodeEnv === 'production') {
   const requiredVars = [
     'DATABASE_URL',
-    'JWT_SECRET',
-    'JWT_REFRESH_SECRET',
+    'FIREBASE_PROJECT_ID',
+    'FIREBASE_PRIVATE_KEY',
+    'FIREBASE_CLIENT_EMAIL',
+    'GOOGLE_CLIENT_ID',
   ];
   
   for (const varName of requiredVars) {

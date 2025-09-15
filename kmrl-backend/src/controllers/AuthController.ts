@@ -1,48 +1,140 @@
 import { Request, Response } from 'express';
 import { body } from 'express-validator';
 import { UserModel } from '../models/User';
-import { JWTService } from '../utils/jwt';
+import { FirebaseService } from '../services/FirebaseService';
 import logger from '../utils/logger';
 import { APIResponse } from '../types';
+import { AuthenticatedRequest } from '../middleware/auth';
+
+const firebaseService = FirebaseService.getInstance();
 
 export class AuthController {
-  static registerValidation = [
-    body('email')
-      .isEmail()
-      .normalizeEmail()
-      .withMessage('Valid email is required'),
-    body('password')
-      .isLength({ min: 6 })
-      .withMessage('Password must be at least 6 characters long')
-      .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/)
-      .withMessage('Password must contain at least one lowercase letter, one uppercase letter, and one number'),
-    body('first_name')
-      .trim()
-      .isLength({ min: 1 })
-      .withMessage('First name is required'),
-    body('last_name')
-      .trim()
-      .isLength({ min: 1 })
-      .withMessage('Last name is required'),
-    body('role')
-      .optional()
-      .isIn(['admin', 'manager', 'user'])
-      .withMessage('Role must be admin, manager, or user')
-  ];
-
-  static loginValidation = [
-    body('email')
-      .isEmail()
-      .normalizeEmail()
-      .withMessage('Valid email is required'),
-    body('password')
+  // Validation for Google sign-in
+  static googleSignInValidation = [
+    body('idToken')
       .notEmpty()
-      .withMessage('Password is required')
+      .withMessage('Firebase ID token is required')
   ];
 
-  static async register(req: Request, res: Response): Promise<void> {
+  // Validation for email sign-up (if supporting email/password)
+  static emailSignUpValidation = [
+    body('idToken')
+      .notEmpty()
+      .withMessage('Firebase ID token is required'),
+    body('email')
+      .isEmail()
+      .normalizeEmail()
+      .withMessage('Valid email is required')
+  ];
+
+  /**
+   * Handle Google Sign-In
+   */
+  static async googleSignIn(req: Request, res: Response): Promise<void> {
     try {
-      const { email, password, first_name, last_name, role } = req.body;
+      const { idToken } = req.body;
+
+      // Validate Google token
+      const validation = await firebaseService.validateGoogleToken(idToken);
+      
+      if (!validation.valid) {
+        res.status(400).json({
+          success: false,
+          error: validation.error || 'Invalid Google token',
+          timestamp: new Date().toISOString()
+        } as APIResponse);
+        return;
+      }
+
+      const userInfo = validation.userInfo!;
+
+      // Extract Google user data
+      const googleId = userInfo.uid; // Firebase UID is used as Google ID
+      const [firstName, ...lastNameParts] = (userInfo.name || '').split(' ');
+
+      // Create or update user in database
+      const user = await UserModel.createOrUpdateGoogleUser({
+        email: userInfo.email,
+        firebase_uid: userInfo.uid,
+        google_id: googleId,
+        first_name: firstName || undefined,
+        last_name: lastNameParts.join(' ') || undefined,
+        avatar_url: userInfo.picture || undefined
+      });
+
+      // Create session cookie for better security
+      const expiresIn = 5 * 24 * 60 * 60 * 1000; // 5 days
+      const sessionCookie = await firebaseService.createSessionCookie(idToken, expiresIn);
+      
+      // Store session in database
+      const expiresAt = new Date(Date.now() + expiresIn);
+      await UserModel.storeSession(
+        user.id,
+        user.firebase_uid,
+        sessionCookie,
+        expiresAt,
+        req.ip,
+        req.get('User-Agent')
+      );
+
+      // Set session cookie
+      res.cookie('session', sessionCookie, {
+        maxAge: expiresIn,
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict'
+      });
+
+      res.status(200).json({
+        success: true,
+        data: {
+          user: {
+            id: user.id,
+            email: user.email,
+            first_name: user.first_name,
+            last_name: user.last_name,
+            avatar_url: user.avatar_url,
+            role: user.role,
+            provider: user.provider,
+            created_at: user.created_at
+          },
+          session: {
+            expires_at: expiresAt.toISOString()
+          }
+        },
+        message: 'Google sign-in successful',
+        timestamp: new Date().toISOString()
+      } as APIResponse);
+
+      logger.info(`Google sign-in successful: ${user.email}`);
+    } catch (error) {
+      logger.error('Google sign-in error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Google sign-in failed',
+        timestamp: new Date().toISOString()
+      } as APIResponse);
+    }
+  }
+
+  /**
+   * Handle email/password sign-up (if needed)
+   */
+  static async emailSignUp(req: Request, res: Response): Promise<void> {
+    try {
+      const { idToken, email } = req.body;
+
+      // Verify Firebase ID token
+      const decodedToken = await firebaseService.verifyIdToken(idToken);
+      
+      if (decodedToken.email !== email) {
+        res.status(400).json({
+          success: false,
+          error: 'Token email does not match provided email',
+          timestamp: new Date().toISOString()
+        } as APIResponse);
+        return;
+      }
 
       // Check if user already exists
       const existingUser = await UserModel.findByEmail(email);
@@ -56,195 +148,116 @@ export class AuthController {
       }
 
       // Create new user
-      const userData = {
-        email,
-        password_hash: password, // Will be hashed in the model
-        role: role || 'user',
-        first_name,
-        last_name
-      };
+      const user = await UserModel.create({
+        email: decodedToken.email!,
+        firebase_uid: decodedToken.uid,
+        first_name: decodedToken.name?.split(' ')[0] || undefined,
+        last_name: decodedToken.name?.split(' ').slice(1).join(' ') || undefined,
+        provider: 'email'
+      });
 
-      const user = await UserModel.create(userData);
-
-      // Generate tokens
-      const accessToken = JWTService.generateAccessToken(user);
-      const refreshToken = JWTService.generateRefreshToken(user);
-
-      // Store refresh token
-      await JWTService.storeRefreshToken(
+      // Create session cookie
+      const expiresIn = 5 * 24 * 60 * 60 * 1000; // 5 days
+      const sessionCookie = await firebaseService.createSessionCookie(idToken, expiresIn);
+      
+      const expiresAt = new Date(Date.now() + expiresIn);
+      await UserModel.storeSession(
         user.id,
-        refreshToken,
+        user.firebase_uid,
+        sessionCookie,
+        expiresAt,
         req.ip,
         req.get('User-Agent')
       );
 
-      // Remove sensitive data from response
-      const { password_hash, ...userResponse } = user;
+      res.cookie('session', sessionCookie, {
+        maxAge: expiresIn,
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict'
+      });
 
       res.status(201).json({
         success: true,
         data: {
-          user: userResponse,
-          tokens: {
-            access_token: accessToken,
-            refresh_token: refreshToken,
-            expires_in: '15m'
+          user: {
+            id: user.id,
+            email: user.email,
+            first_name: user.first_name,
+            last_name: user.last_name,
+            role: user.role,
+            provider: user.provider,
+            created_at: user.created_at
           }
         },
-        message: 'User registered successfully',
+        message: 'Email sign-up successful',
         timestamp: new Date().toISOString()
       } as APIResponse);
 
-      logger.info(`User registered: ${email}`);
+      logger.info(`Email sign-up successful: ${user.email}`);
     } catch (error) {
-      logger.error('Registration error:', error);
+      logger.error('Email sign-up error:', error);
       res.status(500).json({
         success: false,
-        error: 'Registration failed',
+        error: 'Email sign-up failed',
         timestamp: new Date().toISOString()
       } as APIResponse);
     }
   }
 
-  static async login(req: Request, res: Response): Promise<void> {
+  /**
+   * Verify authentication status
+   */
+  static async verifyAuth(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const { email, password } = req.body;
-
-      // Find user by email
-      const user = await UserModel.findByEmail(email);
-      if (!user) {
-        res.status(401).json({
-          success: false,
-          error: 'Invalid credentials',
-          timestamp: new Date().toISOString()
-        } as APIResponse);
-        return;
-      }
-
-      // Validate password
-      const isValidPassword = await UserModel.validatePassword(password, user.password_hash);
-      if (!isValidPassword) {
-        res.status(401).json({
-          success: false,
-          error: 'Invalid credentials',
-          timestamp: new Date().toISOString()
-        } as APIResponse);
-        return;
-      }
-
-      // Update last login
-      await UserModel.updateLastLogin(user.id);
-
-      // Generate tokens
-      const accessToken = JWTService.generateAccessToken(user);
-      const refreshToken = JWTService.generateRefreshToken(user);
-
-      // Store refresh token
-      await JWTService.storeRefreshToken(
-        user.id,
-        refreshToken,
-        req.ip,
-        req.get('User-Agent')
-      );
-
-      // Remove sensitive data from response
-      const { password_hash, ...userResponse } = user;
+      const user = req.user;
 
       res.status(200).json({
         success: true,
         data: {
-          user: userResponse,
-          tokens: {
-            access_token: accessToken,
-            refresh_token: refreshToken,
-            expires_in: '15m'
-          }
+          user: {
+            id: user.id,
+            email: user.email,
+            first_name: user.first_name,
+            last_name: user.last_name,
+            avatar_url: user.avatar_url,
+            role: user.role,
+            provider: user.provider,
+            last_login: user.last_login,
+            created_at: user.created_at
+          },
+          firebase_uid: user.firebase_uid
         },
-        message: 'Login successful',
         timestamp: new Date().toISOString()
       } as APIResponse);
-
-      logger.info(`User logged in: ${email}`);
     } catch (error) {
-      logger.error('Login error:', error);
+      logger.error('Auth verification error:', error);
       res.status(500).json({
         success: false,
-        error: 'Login failed',
+        error: 'Authentication verification failed',
         timestamp: new Date().toISOString()
       } as APIResponse);
     }
   }
 
-  static async refresh(req: Request, res: Response): Promise<void> {
+  /**
+   * Logout user
+   */
+  static async logout(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const { refresh_token } = req.body;
+      const user = req.user;
+      const sessionCookie = req.cookies?.session;
 
-      if (!refresh_token) {
-        res.status(400).json({
-          success: false,
-          error: 'Refresh token is required',
-          timestamp: new Date().toISOString()
-        } as APIResponse);
-        return;
+      // Revoke session cookie from database
+      if (sessionCookie) {
+        await UserModel.revokeSession(sessionCookie);
       }
 
-      // Verify refresh token
-      const payload = JWTService.verifyRefreshToken(refresh_token);
+      // Revoke Firebase refresh tokens
+      await firebaseService.revokeRefreshTokens(user.firebase_uid);
 
-      // Check if refresh token exists in database
-      const isValidToken = await JWTService.validateRefreshToken(refresh_token);
-      if (!isValidToken) {
-        res.status(401).json({
-          success: false,
-          error: 'Invalid refresh token',
-          timestamp: new Date().toISOString()
-        } as APIResponse);
-        return;
-      }
-
-      // Get user details
-      const user = await UserModel.findById(payload.userId);
-      if (!user) {
-        res.status(401).json({
-          success: false,
-          error: 'User not found',
-          timestamp: new Date().toISOString()
-        } as APIResponse);
-        return;
-      }
-
-      // Generate new access token
-      const accessToken = JWTService.generateAccessToken(user);
-
-      res.status(200).json({
-        success: true,
-        data: {
-          access_token: accessToken,
-          expires_in: '15m'
-        },
-        message: 'Token refreshed successfully',
-        timestamp: new Date().toISOString()
-      } as APIResponse);
-
-      logger.info(`Token refreshed for user: ${user.email}`);
-    } catch (error) {
-      logger.error('Token refresh error:', error);
-      res.status(401).json({
-        success: false,
-        error: 'Token refresh failed',
-        timestamp: new Date().toISOString()
-      } as APIResponse);
-    }
-  }
-
-  static async logout(req: Request, res: Response): Promise<void> {
-    try {
-      const { refresh_token } = req.body;
-
-      if (refresh_token) {
-        // Revoke the specific refresh token
-        await JWTService.revokeRefreshToken(refresh_token);
-      }
+      // Clear session cookie
+      res.clearCookie('session');
 
       res.status(200).json({
         success: true,
@@ -252,7 +265,7 @@ export class AuthController {
         timestamp: new Date().toISOString()
       } as APIResponse);
 
-      logger.info('User logged out');
+      logger.info(`User logged out: ${user.email}`);
     } catch (error) {
       logger.error('Logout error:', error);
       res.status(500).json({
@@ -263,12 +276,21 @@ export class AuthController {
     }
   }
 
-  static async logoutAll(req: Request, res: Response): Promise<void> {
+  /**
+   * Logout from all devices
+   */
+  static async logoutAll(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const user = (req as any).user;
+      const user = req.user;
 
-      // Revoke all refresh tokens for the user
-      await JWTService.revokeAllUserTokens(user.id);
+      // Revoke all sessions from database
+      await UserModel.revokeAllUserSessions(user.id);
+
+      // Revoke all Firebase refresh tokens
+      await firebaseService.revokeRefreshTokens(user.firebase_uid);
+
+      // Clear current session cookie
+      res.clearCookie('session');
 
       res.status(200).json({
         success: true,
@@ -287,16 +309,28 @@ export class AuthController {
     }
   }
 
-  static async getProfile(req: Request, res: Response): Promise<void> {
+  /**
+   * Get user profile
+   */
+  static async getProfile(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const user = (req as any).user;
-
-      // Remove sensitive data
-      const { password_hash, ...userProfile } = user;
+      const user = req.user;
 
       res.status(200).json({
         success: true,
-        data: userProfile,
+        data: {
+          id: user.id,
+          email: user.email,
+          first_name: user.first_name,
+          last_name: user.last_name,
+          avatar_url: user.avatar_url,
+          role: user.role,
+          provider: user.provider,
+          is_active: user.is_active,
+          last_login: user.last_login,
+          created_at: user.created_at,
+          updated_at: user.updated_at
+        },
         timestamp: new Date().toISOString()
       } as APIResponse);
     } catch (error) {
@@ -309,40 +343,68 @@ export class AuthController {
     }
   }
 
-  static async changePassword(req: Request, res: Response): Promise<void> {
+  /**
+   * Update user profile
+   */
+  static async updateProfile(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const user = (req as any).user;
-      const { current_password, new_password } = req.body;
+      const user = req.user;
+      const { first_name, last_name, avatar_url } = req.body;
 
-      // Validate current password
-      const isValidPassword = await UserModel.validatePassword(current_password, user.password_hash);
-      if (!isValidPassword) {
-        res.status(400).json({
-          success: false,
-          error: 'Current password is incorrect',
-          timestamp: new Date().toISOString()
-        } as APIResponse);
-        return;
-      }
-
-      // Update password
-      await UserModel.updatePassword(user.id, new_password);
-
-      // Revoke all refresh tokens to force re-login
-      await JWTService.revokeAllUserTokens(user.id);
+      const updatedUser = await UserModel.updateProfile(user.id, {
+        first_name,
+        last_name,
+        avatar_url
+      });
 
       res.status(200).json({
         success: true,
-        message: 'Password changed successfully. Please login again.',
+        data: {
+          id: updatedUser.id,
+          email: updatedUser.email,
+          first_name: updatedUser.first_name,
+          last_name: updatedUser.last_name,
+          avatar_url: updatedUser.avatar_url,
+          role: updatedUser.role,
+          provider: updatedUser.provider,
+          updated_at: updatedUser.updated_at
+        },
+        message: 'Profile updated successfully',
         timestamp: new Date().toISOString()
       } as APIResponse);
 
-      logger.info(`Password changed for user: ${user.email}`);
+      logger.info(`Profile updated for user: ${user.email}`);
     } catch (error) {
-      logger.error('Change password error:', error);
+      logger.error('Update profile error:', error);
       res.status(500).json({
         success: false,
-        error: 'Failed to change password',
+        error: 'Failed to update profile',
+        timestamp: new Date().toISOString()
+      } as APIResponse);
+    }
+  }
+
+  /**
+   * Get Firebase configuration for frontend
+   */
+  static async getFirebaseConfig(req: Request, res: Response): Promise<void> {
+    try {
+      // Only return public configuration
+      res.status(200).json({
+        success: true,
+        data: {
+          projectId: process.env.FIREBASE_PROJECT_ID,
+          authDomain: `${process.env.FIREBASE_PROJECT_ID}.firebaseapp.com`,
+          apiKey: process.env.FIREBASE_WEB_API_KEY, // You'll need to add this to env
+          googleClientId: process.env.GOOGLE_CLIENT_ID
+        },
+        timestamp: new Date().toISOString()
+      } as APIResponse);
+    } catch (error) {
+      logger.error('Get Firebase config error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to get Firebase configuration',
         timestamp: new Date().toISOString()
       } as APIResponse);
     }

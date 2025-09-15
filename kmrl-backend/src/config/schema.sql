@@ -8,10 +8,13 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     email VARCHAR(255) UNIQUE NOT NULL,
-    password_hash VARCHAR(255) NOT NULL,
+    firebase_uid VARCHAR(255) UNIQUE NOT NULL,
+    google_id VARCHAR(255),
     role VARCHAR(50) NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'manager', 'user')),
     first_name VARCHAR(100),
     last_name VARCHAR(100),
+    avatar_url VARCHAR(500),
+    provider VARCHAR(20) NOT NULL DEFAULT 'email' CHECK (provider IN ('google', 'email')),
     is_active BOOLEAN DEFAULT true,
     last_login TIMESTAMP,
     created_at TIMESTAMP DEFAULT NOW(),
@@ -72,11 +75,12 @@ CREATE TABLE IF NOT EXISTS processing_jobs (
     completed_at TIMESTAMP
 );
 
--- User sessions table (for JWT refresh tokens)
+-- User sessions table (for Firebase session cookies)
 CREATE TABLE IF NOT EXISTS user_sessions (
     id SERIAL PRIMARY KEY,
     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-    refresh_token VARCHAR(500) NOT NULL,
+    firebase_uid VARCHAR(255) NOT NULL,
+    session_cookie TEXT,
     expires_at TIMESTAMP NOT NULL,
     ip_address INET,
     user_agent TEXT,
@@ -124,6 +128,9 @@ CREATE TABLE IF NOT EXISTS project_members (
 );
 
 -- Indexes for performance optimization
+CREATE INDEX IF NOT EXISTS idx_users_firebase_uid ON users(firebase_uid);
+CREATE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_documents_project_id ON documents(project_id);
 CREATE INDEX IF NOT EXISTS idx_documents_uploaded_by ON documents(uploaded_by);
 CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
@@ -133,6 +140,7 @@ CREATE INDEX IF NOT EXISTS idx_documents_confidence_score ON documents(confidenc
 CREATE INDEX IF NOT EXISTS idx_processing_jobs_document_id ON processing_jobs(document_id);
 CREATE INDEX IF NOT EXISTS idx_processing_jobs_status ON processing_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_firebase_uid ON user_sessions(firebase_uid);
 CREATE INDEX IF NOT EXISTS idx_user_sessions_expires_at ON user_sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_document_access_logs_document_id ON document_access_logs(document_id);
 CREATE INDEX IF NOT EXISTS idx_document_access_logs_user_id ON document_access_logs(user_id);
@@ -167,7 +175,8 @@ INSERT INTO document_classifications (name, description, color) VALUES
 ('Other', 'Miscellaneous documents', '#F7DC6F')
 ON CONFLICT (name) DO NOTHING;
 
--- Insert default admin user (password: admin123)
-INSERT INTO users (email, password_hash, role, first_name, last_name) VALUES
-('admin@kmrl.com', '$2a$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LeVMpYzxvYzMKJkLu', 'admin', 'System', 'Administrator')
-ON CONFLICT (email) DO NOTHING;
+-- Insert default admin user (will be created via Firebase)
+-- Note: Admin users should be created through Firebase and then assigned admin role
+-- INSERT INTO users (email, firebase_uid, role, first_name, last_name, provider) VALUES
+-- ('admin@kmrl.com', 'firebase-admin-uid', 'admin', 'System', 'Administrator', 'email')
+-- ON CONFLICT (email) DO NOTHING;

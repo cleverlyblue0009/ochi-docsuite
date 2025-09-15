@@ -3,8 +3,15 @@
 export interface User {
   id: number;
   email: string;
-  password_hash: string;
+  firebase_uid: string;
+  google_id?: string;
   role: 'admin' | 'manager' | 'user';
+  first_name?: string;
+  last_name?: string;
+  avatar_url?: string;
+  provider: 'google' | 'email';
+  is_active: boolean;
+  last_login?: Date;
   created_at: Date;
   updated_at?: Date;
 }
@@ -141,11 +148,19 @@ export interface Config {
     redis: string;
     elasticsearch: string;
   };
-  jwt: {
-    secret: string;
-    refreshSecret: string;
-    expiresIn: string;
-    refreshExpiresIn: string;
+  firebase: {
+    projectId: string;
+    privateKeyId: string;
+    privateKey: string;
+    clientEmail: string;
+    clientId: string;
+    authUri: string;
+    tokenUri: string;
+    clientCertUrl: string;
+  };
+  google: {
+    clientId: string;
+    clientSecret: string;
   };
   aws: {
     accessKeyId: string;
