@@ -10,8 +10,8 @@ const Index = () => {
       <Navigation />
       <main className="w-full">
         <HeroSection />
-        <Dashboard />
         <DocumentUpload />
+        <Dashboard />
         <ProjectOverview />
       </main>
     </div>
