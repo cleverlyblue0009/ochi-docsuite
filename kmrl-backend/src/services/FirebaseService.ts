@@ -4,7 +4,7 @@ import logger from '../utils/logger';
 
 export class FirebaseService {
   private static instance: FirebaseService;
-  private app: admin.app.App;
+  private app!: admin.app.App;
 
   private constructor() {
     this.initializeFirebase();
@@ -19,6 +19,12 @@ export class FirebaseService {
 
   private initializeFirebase(): void {
     try {
+      // Check if Firebase credentials are provided
+      if (!config.firebase.projectId || config.firebase.projectId === 'dummy-project-id') {
+        logger.warn('Firebase credentials not configured. Authentication features will be disabled.');
+        return;
+      }
+
       // Initialize Firebase Admin SDK
       const serviceAccount = {
         type: 'service_account',
@@ -41,11 +47,14 @@ export class FirebaseService {
       logger.info('Firebase Admin SDK initialized successfully');
     } catch (error) {
       logger.error('Failed to initialize Firebase Admin SDK:', error);
-      throw error;
+      logger.warn('Authentication features will be disabled.');
     }
   }
 
   async verifyIdToken(idToken: string): Promise<admin.auth.DecodedIdToken> {
+    if (!this.app) {
+      throw new Error('Firebase not initialized. Please configure Firebase credentials.');
+    }
     try {
       const decodedToken = await admin.auth().verifyIdToken(idToken);
       return decodedToken;
@@ -157,7 +166,7 @@ export class FirebaseService {
       const listUsersResult = await admin.auth().listUsers(maxResults, pageToken);
       return {
         users: listUsersResult.users,
-        pageToken: listUsersResult.pageToken
+        ...(listUsersResult.pageToken && { pageToken: listUsersResult.pageToken })
       };
     } catch (error) {
       logger.error('Failed to list users:', error);
@@ -190,8 +199,8 @@ export class FirebaseService {
     return {
       uid: decodedToken.uid,
       email: decodedToken.email || '',
-      name: decodedToken.name,
-      picture: decodedToken.picture,
+      ...(decodedToken.name && { name: decodedToken.name }),
+      ...(decodedToken.picture && { picture: decodedToken.picture }),
       provider: isGoogleUser ? 'google' : 'email',
       emailVerified: decodedToken.email_verified || false
     };
