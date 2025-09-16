@@ -66,7 +66,7 @@ export class DocumentModel {
     const client = await pgPool.connect();
     try {
       let query = `UPDATE documents SET status = $1, updated_at = NOW()`;
-      let values = [status];
+      let values: any[] = [status];
       let paramCount = 1;
 
       if (additionalData) {

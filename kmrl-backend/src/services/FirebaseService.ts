@@ -4,7 +4,7 @@ import logger from '../utils/logger';
 
 export class FirebaseService {
   private static instance: FirebaseService;
-  private app: admin.app.App;
+  private app!: admin.app.App;
 
   private constructor() {
     this.initializeFirebase();
@@ -157,7 +157,7 @@ export class FirebaseService {
       const listUsersResult = await admin.auth().listUsers(maxResults, pageToken);
       return {
         users: listUsersResult.users,
-        pageToken: listUsersResult.pageToken
+        ...(listUsersResult.pageToken && { pageToken: listUsersResult.pageToken })
       };
     } catch (error) {
       logger.error('Failed to list users:', error);
@@ -190,8 +190,8 @@ export class FirebaseService {
     return {
       uid: decodedToken.uid,
       email: decodedToken.email || '',
-      name: decodedToken.name,
-      picture: decodedToken.picture,
+      ...(decodedToken.name && { name: decodedToken.name }),
+      ...(decodedToken.picture && { picture: decodedToken.picture }),
       provider: isGoogleUser ? 'google' : 'email',
       emailVerified: decodedToken.email_verified || false
     };
