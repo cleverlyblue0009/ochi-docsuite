@@ -4,8 +4,8 @@
   "description": "Production-ready backend system for KMRL Document Management System",
   "main": "dist/app.js",
   "scripts": {
-    "dev": "nodemon src/app.ts",
-    "build": "tsc",
+    "dev": "ts-node src/config/index.ts",
+    "build": "npx tsc",
     "start": "node dist/app.js",
     "start:prod": "NODE_ENV=production node dist/app.js",
     "test": "jest",
@@ -14,7 +14,9 @@
     "migrate": "npm run build && node dist/config/migrate.js",
     "seed": "npm run build && node dist/config/seed.js",
     "lint": "eslint src/**/*.ts",
-    "lint:fix": "eslint src/**/*.ts --fix"
+    "lint:fix": "eslint src/**/*.ts --fix",
+    "clean": "rimraf dist",
+    "prebuild": "npm run clean"
   },
   "keywords": [
     "document-management",
@@ -26,7 +28,6 @@
   "author": "KMRL Development Team",
   "license": "MIT",
   "dependencies": {
-    "@types/node": "^20.10.4",
     "axios": "^1.6.2",
     "bull": "^4.12.2",
     "compression": "^1.7.4",
@@ -53,6 +54,7 @@
     "winston": "^3.11.0"
   },
   "devDependencies": {
+    "@types/bull": "^4.10.0",
     "@types/compression": "^1.7.5",
     "@types/cors": "^2.8.17",
     "@types/elasticsearch": "^5.0.43",
@@ -60,7 +62,11 @@
     "@types/jest": "^29.5.8",
     "@types/morgan": "^1.9.9",
     "@types/multer": "^1.4.11",
+    "@types/node": "^20.10.4",
+    "@types/node-cron": "^3.0.11",
+    "@types/pdf-parse": "^1.1.4",
     "@types/pg": "^8.10.9",
+    "@types/sharp": "^0.32.0",
     "@types/supertest": "^2.0.16",
     "@types/uuid": "^9.0.7",
     "@typescript-eslint/eslint-plugin": "^6.13.1",
@@ -76,5 +82,11 @@
   "engines": {
     "node": ">=20.0.0",
     "npm": ">=9.0.0"
+  },
+  "nodemonConfig": {
+    "watch": ["src"],
+    "ext": "ts,js,json",
+    "ignore": ["src/**/*.test.ts", "src/**/*.spec.ts"],
+    "exec": "ts-node src/app.ts"
   }
 }
