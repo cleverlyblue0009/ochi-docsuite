@@ -48,17 +48,20 @@ export const authenticateFirebaseToken = async (
           email: userInfo.email,
           firebase_uid: decodedToken.uid,
           google_id: googleId,
-          first_name: firstName || undefined,
-          last_name: lastNameParts.join(' ') || undefined,
-          avatar_url: userInfo.picture || undefined
+          ...(firstName && { first_name: firstName }),
+          ...(lastNameParts.join(' ') && { last_name: lastNameParts.join(' ') }),
+          ...(userInfo.picture && { avatar_url: userInfo.picture })
         });
       } else {
         // Create user for email/password authentication
+        const firstName = userInfo.name?.split(' ')[0];
+        const lastName = userInfo.name?.split(' ').slice(1).join(' ');
+        
         user = await UserModel.create({
           email: userInfo.email,
           firebase_uid: decodedToken.uid,
-          first_name: userInfo.name?.split(' ')[0] || undefined,
-          last_name: userInfo.name?.split(' ').slice(1).join(' ') || undefined,
+          ...(firstName && { first_name: firstName }),
+          ...(lastName && { last_name: lastName }),
           provider: 'email'
         });
       }
